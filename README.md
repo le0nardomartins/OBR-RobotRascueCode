@@ -1,84 +1,66 @@
 # OBR em C# para sBotics
 
-Projeto pronto para uso em C# no sBotics com:
+Codigo principal: `obr_main.cs`.
 
-- seguidor de linha robusto (reta, ondulada, pontilhada)
-- recuperacao de linha em gap/meio circulo
-- desvio de parede com 3 ultrassonicos (frontal + 2 laterais)
-- sala de resgate (preta -> vermelho, branca/prata -> verde)
-- suporte de camera com maquina de estado inspirada em `tests/detector_pista.py`
-- tracao 4 motores com fallback automatico para 2 motores
+## Componentes usados
 
-## Arquivo principal
+- `lf`: motor dianteiro esquerdo.
+- `rf`: motor dianteiro direito.
+- `lb`: motor traseiro esquerdo.
+- `rb`: motor traseiro direito.
+- `sl`: sensor de linha/cor esquerdo.
+- `sr`: sensor de linha/cor direito.
+- `scbl`: sensor de cor traseiro esquerdo.
+- `scbr`: sensor de cor traseiro direito.
+- `ultf`: sensor frontal para parede/caixa.
+- `ultl`: sensor lateral esquerdo.
+- `ultr`: sensor lateral direito.
+- `ultrampa`: sensor inclinado para o chao para detectar rampa.
+- `cam`: camera instalada, apenas diagnosticada no terminal.
+- `sc`: servo da camera, apenas diagnosticado no terminal.
+- `led`: LED opcional de status.
 
-- `obr_line.cs`
+## Terminal
 
-## Arquivos espelho
+Ao iniciar, antes de qualquer movimento, o codigo imprime a checagem de componentes:
 
-- `examples/example_sensors_on.cs`
-- `examples/example_motors_on.cs`
+- lista tudo que o simulador encontrou no robo;
+- marca cada componente esperado como `OK`, `FALTOU OBRIGATORIO` ou `FALTOU OPCIONAL`;
+- lista componentes sobrando no modelo;
+- bloqueia o movimento se faltar `lf`, `rf`, `sl` ou `sr`.
 
-## Como usar no sBotics
+O console imprime uma linha por segundo (`INTERVALO_LOG_TERMINAL_MS = 1000`) no formato:
 
-1. Abra o menu Programacao.
-2. Escolha linguagem C#.
-3. Apague todo o conteudo atual do editor (`Ctrl+A`, `Delete`).
-4. Cole o conteudo de `obr_line.cs`.
-5. Compile e rode.
+```text
+TEL linha=PRETO/BRANCO traseira=N/A/N/A ultf/ultl/ultr=9999/9999/9999 rampa=False(9999) cam=True sc=True motores=0/0/0/0 bussola=0
+```
 
-## Componentes esperados (nomes padrao)
+Campos:
 
-- `LEFT_FRONT_MOTOR = "lf"`
-- `RIGHT_FRONT_MOTOR = "rf"`
-- `LEFT_REAR_MOTOR = "lb"` (opcional)
-- `RIGHT_REAR_MOTOR = "rb"` (opcional)
-- `LEFT_LINE_SENSOR = "sl"` (sensor de linha da esquerda)
-- `RIGHT_LINE_SENSOR = "sr"` (sensor de linha da direita)
-- `FRONT_LINE_SENSOR = "fc"` (opcional)
-- `BALL_COLOR_SENSOR = "bc"` (opcional)
-- `FRONT_ULTRA_SENSOR = "ultrassonico"` (opcional)
-- `LEFT_WALL_ULTRA_SENSOR = "ultrassonico_esquerda"` (opcional)
-- `RIGHT_WALL_ULTRA_SENSOR = "ultrassonico_direita"` (opcional)
-- `CAMERA_SENSOR = "camera"` (opcional)
-- `STATUS_LED = "led"` (opcional)
+- `linha`: cores dos sensores `sl/sr`.
+- `traseira`: cores dos sensores `scbl/scbr`.
+- `ultf/ultl/ultr`: distancias dos tres sensores.
+- `rampa`: estado da rampa e leitura do `ultrampa`.
+- `cam` e `sc`: mostram se a camera e o servo existem.
+- `motores`: comandos finais `lf/rf/lb/rb`.
+- `bussola`: valor atual da bussola.
 
-Observacoes:
+## Rampa
 
-- o script tenta resolver aliases automaticamente (ex.: `l/r/l2/r2`, `lc/rc`, `us`, `cam`) para facilitar migracao
-- se seu sensor esquerdo de linha nao for `sl`, altere `LEFT_LINE_SENSOR` no topo do `obr_line.cs`
+O `ultrampa` tem alcance curto. A rampa fica ativa quando a leitura esta entre:
 
-## Parametros para calibracao
+- `DISTANCIA_RAMPA_MINIMA = 1.0`
+- `DISTANCIA_RAMPA_MAXIMA = 2.0`
 
-- `BASE_SPEED`
-- `MAX_TURN`
-- `BLACK_BRIGHTNESS_MAX`
-- `DOTTED_LINE_GRACE_MS`
-- `SEARCH_MAX_MS`
-- `WALL_NEAR_THRESHOLD`
-- `WALL_CRITICAL_THRESHOLD`
-- `REAR_MOTOR_FACTOR`
-- `RESCUE_TIMEOUT_MS`
-- `ENABLE_CAMERA_STOP_BEHAVIOR` (padrao `false`)
+O LED fica azul durante toda a rotina. Quando `rampaAtiva` fica `true`, os motores traseiros recebem tracao. Fora da rampa, `lb/rb` recebem comando `0` e funcionam como roda boba.
 
-## Regras de compatibilidade C# no sBotics (importante)
+## Calibracao principal
 
-Para evitar erros de parser no sBotics:
-
-- nao use identificadores contendo `try` em nenhum lugar do nome
-- evite `async Task<T>`; prefira `async Task` + flags de estado
-- mantenha nomes simples em ASCII
-
-## Troubleshooting rapido
-
-Se aparecer `Erro: uso da palavra reservada "try"`:
-
-1. Confirme que esta usando `obr_line.cs` atualizado.
-2. No editor sBotics, busque por `try` e por `Task<`.
-3. Se achar, remova/renomeie.
-4. Apague tudo e cole novamente o arquivo principal.
-
-## Estrutura do projeto
-
-- `obr_line.cs` -> script principal para competicao
-- `examples/` -> copias espelho para teste rapido
-- `tests/detector_pista.py` -> referencia de visao computacional
+- `VELOCIDADE_BASE`: velocidade em reta.
+- `VELOCIDADE_CURVA`: velocidade reduzida em curva.
+- `VELOCIDADE_GIRO_CURVA`: giro controlado em curva fechada.
+- `BRILHO_MAXIMO_PRETO`: limite de brilho para considerar preto.
+- `LIMITE_PAREDE_PROXIMA`: distancia para iniciar desvio de parede.
+- `DISTANCIA_RAMPA_MAXIMA`: alcance maximo do sensor de rampa.
+- `INTERVALO_LEITURA_SENSORES_MS`: intervalo entre medicoes de sensores.
+- `INTERVALO_LOG_TERMINAL_MS`: intervalo entre prints do terminal.
