@@ -8,20 +8,20 @@ void MoverServo(string servo, double velocidade) {
 
 // ABAIXAR E LEVANTAR BRACO
 async Task AbaixarBraco() {
-    MoverServo(SERVO_BRACO, 80); // Abaixar ( -80 --> 0 (+80) --> 90 (+90) )
-    await Time.Delay(2250);
+    MoverServo(SERVO_BRACO, 170); // Abaixar ( -80 --> 0 (+80) --> 90 (+90) )
+    await Time.Delay(3000);
     Bot.GetComponent<Servomotor>(SERVO_BRACO).Locked = true;
 }
 
 async Task LevantarBraco() {
-    MoverServo(SERVO_BRACO, -80); // Levantar ( (-80) -80 <-- (-90) 0 <-- 90 ) 
-    await Time.Delay(2250);
+    MoverServo(SERVO_BRACO, -170); // Levantar ( (-80) -80 <-- (-90) 0 <-- 90 ) 
+    await Time.Delay(2000);
     Bot.GetComponent<Servomotor>(SERVO_BRACO).Locked = true;
 }
 
 // PREPARACAO INICIAL BRACO
 async Task PreparacaoInicialBraco() {
-    MoverServo(SERVO_BRACO, -50); // (-80) -80 <-- 0
+    MoverServo(SERVO_BRACO, -170); // 1030ms para sair da posição inicial e chegar a final
     await Time.Delay(2000);
     Bot.GetComponent<Servomotor>(SERVO_BRACO).Locked = true;
 }
@@ -38,5 +38,7 @@ async Task Main() {
     await Time.Delay(1000); 
 
     await LevantarBraco();
+
+    await AbaixarBraco();
     
 }

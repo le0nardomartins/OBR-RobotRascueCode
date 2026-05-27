@@ -6,14 +6,14 @@ void MoverServo(string servo, double velocidade) {
 }
 
 async Task FecharPorta() {
-    MoverServo(SERVO_PORTA, 80); // Fechar / abaixar
+    MoverServo(SERVO_PORTA, 100); // Fechar / abaixar
     await Time.Delay(1000);
 
     Bot.GetComponent<Servomotor>(SERVO_PORTA).Locked = true;
 }
 
 async Task LevantarPorta() {
-    MoverServo(SERVO_PORTA, -80); // Levantar / abrir
+    MoverServo(SERVO_PORTA, -100); // Levantar / abrir
     await Time.Delay(1000);
 
     Bot.GetComponent<Servomotor>(SERVO_PORTA).Locked = true;
