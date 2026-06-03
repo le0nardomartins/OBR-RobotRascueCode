@@ -10,10 +10,14 @@ const string SENSOR_ESQUERDO_EXTERNO = "sensor_IR_esquerda_externo";
 const string SENSOR_MEIO = "sensor_IR_meio";
 const string SENSOR_DIREITO_INTERNO = "sensor_IR_direita_interno";
 const string SENSOR_DIREITO_EXTERNO = "sensor_IR_direita_externo";
+const string ULTRA_FRENTE_ESQUERDA = "ultrassonico_frente_esquerda";
+const string ULTRA_FRENTE_DIREITA = "ultrassonico_frente_direita";
+const string ULTRA_DIREITA = "ultrassonico_direita";
+const string ULTRA_ESQUERDA = "ultrassonico_esquerda";
 
 // ===================== Declarando Variáveis Básicas =====================
 const double FORCA_MOTOR = 1000; // Torque dos motores
-const double BRILHO_MAXIMO_PRETO = 45; // Valor do brilho máximo para ser considerado preto (menor, mais rígido)
+const double BRILHO_MAXIMO_PRETO = 10; // Valor do brilho máximo para ser considerado preto (menor, mais rígido)
 const double BRILHO_MINIMO_VERDE = 20; // Valor do brilho mínimo pra ser considerado verde
 const double MARGEM_VERDE = 12;
 
@@ -27,6 +31,27 @@ const double VELOCIDADE_VERDE_90 = 1500;
 const double VELOCIDADE_VERDE_LENTA = -650;
 const double VELOCIDADE_GIRO_VERDE_PARADO = 1500;
 const double ANGULO_GIRO_VERDE_GRAUS = 95;
+
+// ===================== Declarando Obstáculo =====================
+const double CM_POR_UNIDADE_ULTRASSOM = 10.0; // Fator de conversão para cm
+const double DISTANCIA_OBSTACULO = 30.0; // Distância (cm) para detectar obstáculo na frente e lateral
+const double VELOCIDADE_GIRO_OBSTACULO = 1300;
+const double VELOCIDADE_BUSCA_GIRO = 350;           // Velocidade lenta do giro na busca de linha
+const double VELOCIDADE_DESVIO = 150;               // Velocidade de passagem cega
+const double TEMPO_MAX_GIRO_OBSTACULO_MS = 1000; // Tempo para o robô virar após ver o obstaculo e seguir para os lados
+const double TEMPO_ESPERA_RETORNO_MS = 1500;    // Tempo andando após o obstáculo, e antes de girar de volta
+const double PAUSA_ESTABILIZAR_MS = 80;
+const double ANGULO_GIRO_OBSTACULO_GRAUS = 60;  // Ângulo alvo para os giros do desvio
+
+// Fases da Detecção de Obstáculos
+const int MODO_SEGUIR_LINHA = 0;
+const int MODO_FASE1_DESVIO  = 1;  // Gira para ladoDesvio, saindo da frente do obstáculo
+const int MODO_FASE2_PASSE   = 2;  // Anda reto monitorando lateral até obstáculo sair
+const int MODO_FASE2_ESPERA  = 3;  // Aguarda distância extra antes de girar de volta
+const int MODO_FASE3_RETORNO = 4;  // Gira no sentido oposto para realinhar com a linha
+const int MODO_FASE4_PROCURA = 5;  // Avança até sensor lateral confirmar obstáculo passou
+const int MODO_FASE5_AJUSTE  = 6;  // Giro lento + regra do sensor correto para alinhar
+const double TEMPO_MEMORIA_OBSTACULO_MS = 10000; // Tempo após obstáculo em que PONTE/BRANCO são suprimidos
 
 // ===================== Declarando Tempos =====================
 const double TEMPO_FRENTE_MS = 60;
@@ -54,6 +79,18 @@ double ultimoVerdeEsquerdaMs = 0;
 double ultimoVerdeDireitaMs = 0;
 double ultimoDeteccao90SemVerdeMs = 0;
 
+int modoAtual = MODO_SEGUIR_LINHA;
+int ladoDesvio = 1;               // 1=direita, -1=esquerda
+double anguloInicioGiro = 0;
+bool jaViuObstaculoLateral = false;
+double inicioModoMs = 0;
+double ultimoObstaculoMs = 0;     // Timestamp do último obstáculo detectado
+bool buscaViuLateral = false;     // Flag para confirmar que lateral viu+liberou obstáculo na busca
+bool buscaAchouAoAvancar = false; // Encontrou linha avançando (todos pretos): gira no sentido oposto
+double inicioBusca2Ms = 0;        // Timestamp do início da fase 2 (giro) do busca
+string ultimoLogModo = "";
+string ultimoLogUltrassonico = "";
+
 double AgoraMs() {
     return Time.Timestamp * 1000.0;
 }
@@ -76,6 +113,7 @@ double DiferencaAngular(double origem, double atual) {
 }
 
 bool Se_Preto(Color cor) {
+    if (cor.Blue > cor.Red && cor.Blue > cor.Green) return false;
     return (cor.Closest() == Colors.Black) || (cor.Brightness <= BRILHO_MAXIMO_PRETO);
 }
 
@@ -368,6 +406,60 @@ async Task AjustarEsquerdaExterno() {
     await AvancarCegoAposAjuste();
 }
 
+// ===================== Obstáculo =====================
+
+double LerUltraCm(string nomeSensor) {
+    double d = Bot.GetComponent<UltrasonicSensor>(nomeSensor).Analog;
+    if (d < 0) return -1;
+    return d * CM_POR_UNIDADE_ULTRASSOM;
+}
+
+double LerLateral(int lado) {
+    return lado > 0 ? LerUltraCm(ULTRA_DIREITA) : LerUltraCm(ULTRA_ESQUERDA);
+}
+
+bool ObstaculoNaFrente(double frenteEsquerdaCm, double frenteDireitaCm) {
+    bool fe = frenteEsquerdaCm >= 0 && frenteEsquerdaCm <= DISTANCIA_OBSTACULO;
+    bool fd = frenteDireitaCm >= 0 && frenteDireitaCm <= DISTANCIA_OBSTACULO;
+    return fe && fd;
+}
+
+bool LateralVeObstaculo(int lado) {
+    double cm = LerLateral(lado);
+    return cm >= 0 && cm <= DISTANCIA_OBSTACULO;
+}
+
+void GirarParaLado(int lado) {
+    // Mover invertido: DIREITA → Mover(-V, V); ESQUERDA → Mover(V, -V)
+    if (lado > 0) Mover(-VELOCIDADE_GIRO_OBSTACULO, VELOCIDADE_GIRO_OBSTACULO);
+    else Mover(VELOCIDADE_GIRO_OBSTACULO, -VELOCIDADE_GIRO_OBSTACULO);
+}
+
+void LogUltrassonicos(double frenteEsquerdaCm, double frenteDireitaCm, double esquerdaCm, double direitaCm) {
+    string FmtD(double cm) {
+        if (cm < 0) return "---";
+        int ceil = (int)cm;
+        if (cm > ceil) ceil++;
+        return ceil.ToString();
+    }
+    string linha = "[ULTRA] FE=" + FmtD(frenteEsquerdaCm) + " FD=" + FmtD(frenteDireitaCm)
+        + " E=" + FmtD(esquerdaCm) + " D=" + FmtD(direitaCm);
+    if (linha == ultimoLogUltrassonico) return;
+    ultimoLogUltrassonico = linha;
+    IO.PrintLine(linha);
+}
+
+void EntrarModo(int novoModo, string texto) {
+    modoAtual = novoModo;
+    inicioModoMs = AgoraMs();
+    if (texto == ultimoLogModo) return;
+    ultimoLogModo = texto;
+    IO.PrintLine("[MODO] " + texto);
+}
+
+
+// ===================== Main =====================
+
 async Task Main() {
     IO.OpenConsole();
 
@@ -375,6 +467,135 @@ async Task Main() {
         if (AlgumSensorVermelho()) {
             Mover(0, 0);
             IO.PrintLine("VERMELHO DETECTADO / PARADO");
+            await Time.Delay(TEMPO_FRENTE_MS);
+            continue;
+        }
+
+        double frenteEsquerdaCm = LerUltraCm(ULTRA_FRENTE_ESQUERDA);
+        double frenteDireitaCm  = LerUltraCm(ULTRA_FRENTE_DIREITA);
+        double direitaCm        = LerUltraCm(ULTRA_DIREITA);
+        double esquerdaCm       = LerUltraCm(ULTRA_ESQUERDA);
+
+        // ---- Fases de desvio de obstáculo ----
+
+        // FASE 1: Desvio Primário — gira para ladoDesvio saindo da frente do obstáculo
+        if (modoAtual == MODO_FASE1_DESVIO) {
+            GirarParaLado(ladoDesvio);
+            bool girou = DiferencaAngular(anguloInicioGiro, Bot.Compass) >= ANGULO_GIRO_OBSTACULO_GRAUS;
+            bool tempoEsgotou = (AgoraMs() - inicioModoMs) > TEMPO_MAX_GIRO_OBSTACULO_MS;
+            if (girou || tempoEsgotou) {
+                Mover(0, 0);
+                await Time.Delay(PAUSA_ESTABILIZAR_MS);
+                jaViuObstaculoLateral = false;
+                IO.PrintLine("[DESVIO] Fase 1: terminada");
+                EntrarModo(MODO_FASE2_PASSE, "FASE 2: PASSE CEGO");
+            }
+            await Time.Delay(TEMPO_FRENTE_MS);
+            continue;
+        }
+
+        // FASE 2a: Passe Cego — anda reto, monitora lateral até obstáculo sair
+        if (modoAtual == MODO_FASE2_PASSE) {
+            Mover(VELOCIDADE_DESVIO, VELOCIDADE_DESVIO);
+            bool veAtual = LateralVeObstaculo(-ladoDesvio);
+            if (veAtual) jaViuObstaculoLateral = true;
+            bool passou = jaViuObstaculoLateral && !veAtual;
+            bool timeout = (AgoraMs() - inicioModoMs) > TEMPO_MAX_GIRO_OBSTACULO_MS;
+            if (passou || timeout) {
+                EntrarModo(MODO_FASE2_ESPERA, "FASE 2: AGUARDANDO DISTANCIA");
+            }
+            await Time.Delay(TEMPO_FRENTE_MS);
+            continue;
+        }
+
+        // FASE 2b: Espera — avança distância extra antes de girar de volta
+        if (modoAtual == MODO_FASE2_ESPERA) {
+            Mover(VELOCIDADE_DESVIO, VELOCIDADE_DESVIO);
+            if ((AgoraMs() - inicioModoMs) >= TEMPO_ESPERA_RETORNO_MS) {
+                Mover(0, 0);
+                await Time.Delay(PAUSA_ESTABILIZAR_MS);
+                anguloInicioGiro = Bot.Compass;
+                IO.PrintLine("[DESVIO] Fase 2: terminada");
+                EntrarModo(MODO_FASE3_RETORNO, "FASE 3: GIRO DE RETORNO");
+            }
+            await Time.Delay(TEMPO_FRENTE_MS);
+            continue;
+        }
+
+        // FASE 3: Giro de Retorno — gira -ladoDesvio para realinhar com a linha
+        if (modoAtual == MODO_FASE3_RETORNO) {
+            GirarParaLado(-ladoDesvio);
+            bool girou = DiferencaAngular(anguloInicioGiro, Bot.Compass) >= ANGULO_GIRO_OBSTACULO_GRAUS;
+            bool tempoEsgotou = (AgoraMs() - inicioModoMs) > TEMPO_MAX_GIRO_OBSTACULO_MS;
+            if (girou || tempoEsgotou) {
+                Mover(0, 0);
+                await Time.Delay(PAUSA_ESTABILIZAR_MS);
+                IO.PrintLine("[DESVIO] Fase 3: terminada");
+                EntrarModo(MODO_SEGUIR_LINHA, "SEGUIR LINHA");
+            }
+            await Time.Delay(TEMPO_FRENTE_MS);
+            continue;
+        }
+
+        // FASE 4: Procurar Nova Linha — avança até sensor lateral confirmar obstáculo passou
+        if (modoAtual == MODO_FASE4_PROCURA) {
+            bool veLatNow = LateralVeObstaculo(-ladoDesvio);
+            if (veLatNow) buscaViuLateral = true;
+            bool lateralConfirmada = buscaViuLateral && !veLatNow;
+            if (AlgumSensorSe_Preto()) {
+                buscaAchouAoAvancar = true;
+                buscaViuLateral = true;
+                lateralConfirmada = true;
+            } else {
+                Mover(VELOCIDADE_DESVIO, VELOCIDADE_DESVIO);
+            }
+            if (lateralConfirmada) {
+                Mover(0, 0);
+                await Time.Delay(PAUSA_ESTABILIZAR_MS);
+                IO.PrintLine("[DESVIO] Fase 4: terminada");
+                inicioBusca2Ms = 0;
+                EntrarModo(MODO_FASE5_AJUSTE, "FASE 5: AJUSTE DE LINHA");
+            }
+            await Time.Delay(TEMPO_FRENTE_MS);
+            continue;
+        }
+
+        // FASE 5: Ajuste de Linha — giro lento com regra do sensor correto
+        if (modoAtual == MODO_FASE5_AJUSTE) {
+            if (inicioBusca2Ms == 0) inicioBusca2Ms = AgoraMs();
+            double tempoGirando = AgoraMs() - inicioBusca2Ms;
+            bool _di = PretoDireitaInterno();
+            bool _de = PretoDireitaExterno();
+            bool _ei = PretoEsquerdaInterno();
+            bool _ee = PretoEsquerdaExterno();
+            bool _m  = PretoMeio();
+            bool ajustado = _m && !_ei && !_ee && !_di && !_de;
+            bool timeoutGiro = tempoGirando >= TEMPO_MAX_GIRO_OBSTACULO_MS;
+            if (ajustado || timeoutGiro) {
+                Mover(0, 0);
+                await Time.Delay(PAUSA_ESTABILIZAR_MS);
+                IO.PrintLine("[DESVIO] Fase 5: terminada");
+                ultimoObstaculoMs = 0;
+                EntrarModo(MODO_SEGUIR_LINHA, "SEGUIR LINHA");
+            } else {
+                int ladoGiro = buscaAchouAoAvancar ? ladoDesvio : -ladoDesvio;
+                if (ladoGiro > 0) Mover(-VELOCIDADE_BUSCA_GIRO, VELOCIDADE_BUSCA_GIRO);
+                else Mover(VELOCIDADE_BUSCA_GIRO, -VELOCIDADE_BUSCA_GIRO);
+            }
+            await Time.Delay(TEMPO_FRENTE_MS);
+            continue;
+        }
+
+        // ---- MODO_SEGUIR_LINHA: verificar obstáculo antes do follow line ----
+        if (ObstaculoNaFrente(frenteEsquerdaCm, frenteDireitaCm)) {
+            Mover(0, 0);
+            IO.PrintLine("OBSTACULO ENCONTRADO");
+            ultimoObstaculoMs = AgoraMs();
+            double dirCheck = LerUltraCm(ULTRA_DIREITA);
+            ladoDesvio = (dirCheck < 0 || dirCheck > DISTANCIA_OBSTACULO) ? 1 : -1;
+            anguloInicioGiro = Bot.Compass;
+            string ladoStr = ladoDesvio > 0 ? "DIREITA" : "ESQUERDA";
+            EntrarModo(MODO_FASE1_DESVIO, "FASE 1: DESVIO " + ladoStr);
             await Time.Delay(TEMPO_FRENTE_MS);
             continue;
         }
@@ -389,6 +610,8 @@ async Task Main() {
         bool pretoEsquerda = pretoEsquerdaInterno || pretoEsquerdaExterno;
         bool pretoDireita = pretoDireitaInterno || pretoDireitaExterno;
         bool todosBrancos = !pretoMeio && !pretoDireita && !pretoEsquerda;
+
+        bool obstaculoRecente = ultimoObstaculoMs > 0 && (AgoraMs() - ultimoObstaculoMs) <= TEMPO_MEMORIA_OBSTACULO_MS;
 
         if (verdeEsquerda) ultimoVerdeEsquerdaMs = AgoraMs();
         if (verdeDireita) ultimoVerdeDireitaMs = AgoraMs();
@@ -443,6 +666,13 @@ async Task Main() {
         } else if (!pretoMeio && pretoEsquerdaInterno) {
             ImprimirEstado(pretoEsquerdaInterno, pretoEsquerdaExterno, pretoMeio, pretoDireitaInterno, pretoDireitaExterno, "MEIO BRANCO / ESQUERDA LEVE");
             await AjustarEsquerdaInterno();
+        } else if (todosBrancos && obstaculoRecente && (AgoraMs() - inicioModoMs) >= 500) {
+            ImprimirEstado(pretoEsquerdaInterno, pretoEsquerdaExterno, pretoMeio, pretoDireitaInterno, pretoDireitaExterno, "BUSCA LINHA RETORNO");
+            inicioTodosBrancosMs = 0;
+            buscaViuLateral = false;
+            buscaAchouAoAvancar = false;
+            inicioBusca2Ms = 0;
+            EntrarModo(MODO_FASE4_PROCURA, "FASE 4: PROCURANDO LINHA");
         } else if (todosBrancos && (AgoraMs() - inicioTodosBrancosMs) > TEMPO_BRANCO_PARA_PONTE_MS && await TentarAtravessarFalhaDaLinha()) {
             ImprimirEstado(pretoEsquerdaInterno, pretoEsquerdaExterno, pretoMeio, pretoDireitaInterno, pretoDireitaExterno, "PONTE BRANCO / ACHOU");
         } else if (todosBrancos && (AgoraMs() - inicioTodosBrancosMs) > TEMPO_BRANCO_PARA_PONTE_MS) {
